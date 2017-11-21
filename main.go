@@ -33,15 +33,18 @@ func main() {
 
 	//set up a ticker to show output every 2 seconds
 	ticker := time.NewTicker(time.Millisecond * 2000).C
-	var hashcount uint64 = 0               //total attempts at cracking password
-	var sekret = *respPtr                  //the thing we are trying to get
+	var hashcount uint64 = 0 //total attempts at cracking password
+	var targetHash [16]byte
+	s, _ := hex.DecodeString(*respPtr)
+	copy(targetHash[:], s) //the thing we are trying to get
+	fmt.Printf("%s %s   \n", targetHash, *respPtr)
 	passwordList := make(chan string, 500) //arbitrarily chose size of this - happy to pick a better number but this seems fine for now
 	win := make(chan string)               // Not sure this is the best way of doing parallel (wait groups might work better?), agian, whatever
 
 	//display output to identify any silly input mistakes user may have made
 	fmt.Printf("Attempting to crack auth header using the following params (there should be no quotes in these):\n")
 	fmt.Printf("Threads:%d\nUsername:%s\nRealm:%s\nNonce:%s\nURI:%s\nCNonce:%s\nNC:%s\nQOP:%s\nMethod:%s\nResp:%s\n",
-		*workerPtr, *usrnamePtr, *realmPtr, *noncePtr, *uriPtr, *cnoncePtr, *ncPtr, *qopPtr, *methPtr, *respPtr)
+		*workerPtr, *usrnamePtr, *realmPtr, *noncePtr, *uriPtr, *cnoncePtr, *ncPtr, *qopPtr, *methPtr, hex.EncodeToString(targetHash[:]))
 
 	//start the input/creator goroutine
 	if len(*wordlistPtr) > 0 {
@@ -51,7 +54,7 @@ func main() {
 
 	//start the consumer goroutines - could probably make this automatically work out how many workers are optimal based on current hashing speed
 	for x := 0; x < *workerPtr; x++ {
-		go crackPassword(passwordList, win, sekret, &hashcount, *cnoncePtr, ha2, *noncePtr, *ncPtr, *realmPtr, *usrnamePtr, *qopPtr)
+		go crackPassword(passwordList, win, targetHash, &hashcount, *cnoncePtr, ha2, *noncePtr, *ncPtr, *realmPtr, *usrnamePtr, *qopPtr)
 	}
 
 	//keep an eye on our workers, and display output
@@ -61,7 +64,7 @@ func main() {
 	for {
 		select {
 		case hacked := <-win: //this should exit the program if we win
-			fmt.Println(hacked)
+			fmt.Printf("Success!\n%s:%s", hacked, *respPtr)
 			return
 		case <-ticker:
 			seconds += 2
@@ -98,22 +101,15 @@ func fillWordlist(passwords chan<- string, stdin bool, wordlist string) {
 
 }
 
-func getAuthHash(password string, cnonce string, ha2 string, nonce string, nc string, realm string, user string, qop string) string {
-	resp := getHash(getHash(user+":"+realm+":"+password) + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2)
-	return resp
-}
-
 func getHash(password string) string {
-	//creating a new md5 object every hash computation seems inefficient, there is probably a better way of doing this
-	hasher := md5.New()
-	hasher.Write([]byte(password))
-	return hex.EncodeToString(hasher.Sum(nil))
+	return fmt.Sprintf("%x", md5.Sum([]byte(password)))
 }
 
-func crackPassword(passwords <-chan string, win chan<- string, target string, count *uint64, cnonce string, ha2 string, nonce string, nc string, realm string, user string, qop string) {
+func crackPassword(passwords <-chan string, win chan<- string, target [16]byte, count *uint64, cnonce string, ha2 string, nonce string, nc string, realm string, user string, qop string) {
 	//goroutine thingo, reads from the passwords channel, and compares the output to the target output
+	s := ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + ha2
 	for pass := range passwords {
-		v := getAuthHash(pass, cnonce, ha2, nonce, nc, realm, user, qop) //Could be optimized to avoid string casting, and simply compare slices per-gouroutine
+		v := md5.Sum([]byte(fmt.Sprintf("%x", md5.Sum([]byte(user+":"+realm+":"+pass))) + s))
 		if v == target {
 			win <- pass
 		}
